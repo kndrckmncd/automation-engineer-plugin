@@ -1,0 +1,21 @@
+{
+  "$schema": "../../.github/plugin/plugin.schema.json",
+  "name": "automation-engineer",
+  "displayName": "Automation Engineer",
+  "description": "Automation Engineer for RPA bot delivery, production triage, and disciplined work tracking.",
+  "version": "0.1.0",
+  "author": {
+    "name": "sean manicad",
+    "email": "sean_kendrick_manicad@manulife.ca"
+  },
+  "homepage": "https://github.com/manulife-innersource/plugins/tree/main/plugins/automation-engineer",
+  "keywords": [
+    "automation",
+    "rpa",
+    "power-automate",
+    "aa360",
+    "sql",
+    "jira",
+    "incident-triage"
+  ]
+}

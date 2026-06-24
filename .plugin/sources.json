@@ -1,0 +1,53 @@
+{
+  "$schema": "../../.github/plugin/sources.schema.json",
+  "skills": [
+    {
+      "name": "jira-search",
+      "source": {
+        "repo": "manulife-innersource/agent-toolkit",
+        "path": ".github/skills/jira/jira-search",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "jira-get",
+      "source": {
+        "repo": "manulife-innersource/agent-toolkit",
+        "path": ".github/skills/jira/jira-get",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "jira-create",
+      "source": {
+        "repo": "manulife-innersource/agent-toolkit",
+        "path": ".github/skills/jira/jira-create",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "jira-comment",
+      "source": {
+        "repo": "manulife-innersource/agent-toolkit",
+        "path": ".github/skills/jira/jira-comment",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "jira-update",
+      "source": {
+        "repo": "manulife-innersource/agent-toolkit",
+        "path": ".github/skills/jira/jira-update",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "jira-transition",
+      "source": {
+        "repo": "manulife-innersource/agent-toolkit",
+        "path": ".github/skills/jira/jira-transition",
+        "ref": "main"
+      }
+    }
+  ]
+}
