@@ -1,0 +1,9 @@
+# .symphony.yml — owned by this repository
+#
+# Edit this file to configure Symphony workflows for this repo.
+# See https://github.com/manulife-innersource/symphony for schema documentation.
+#
+# Run `gh symphony workflow add <name>` to install workflow stubs and
+# append their configuration sections below.
+
+workflows:
