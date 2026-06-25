@@ -1,32 +1,31 @@
 ---
 name: work-tracking-operations
-description: "Use when updating delivery traceability records across Jira, Planview, and Workday. Do NOT use for technical debugging or root-cause analysis."
+description: "Use when updating project progress in Jira and logging delivery hours in Planview. Do NOT use for technical design or bot debugging."
 ---
 
 # Work Tracking Operations
 
 ## When to Use
 
-- You need to keep daily execution traceable.
-- You must update ticket, time, and leave records consistently.
+- You need to reflect delivery progress in Jira.
+- You must log worked hours against the correct Planview code.
+- You want ticket status and time tracking to stay aligned.
 
 ## Procedure
 
 1. Jira updates:
-   - Create ticket if missing.
-   - Update status, summary, and evidence links.
-   - Add comments for investigation milestones.
+   - Pull the item from backlog when work starts.
+   - Move it to in progress during development.
+   - Assign it to testing when development is done.
+   - Move it through code review and then to done once approved.
 2. Planview time tagging:
-   - Tag effort to the correct project and sprint context.
-   - Align logged effort with Jira activity.
-3. Workday leave plotting:
-   - Record planned leave in advance.
-   - Ensure handoff notes exist for in-flight incident work.
-4. Daily closure check:
-   - Confirm incident and delivery work is reflected in Jira.
-   - Confirm effort is tagged in Planview.
+   - Use the correct Planview code.
+   - Log the number of hours actually worked on that code.
+3. Closure check:
+   - Confirm Jira reflects the current delivery stage.
+   - Confirm Planview reflects the time spent.
 
 ## Output
 
-- Daily operations traceability snapshot
-- Ticket/time alignment confirmation
+- Jira progress update summary
+- Planview hour logging confirmation

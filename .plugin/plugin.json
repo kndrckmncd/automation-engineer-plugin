@@ -2,7 +2,7 @@
   "$schema": "../../.github/plugin/plugin.schema.json",
   "name": "automation-engineer",
   "displayName": "Automation Engineer",
-  "description": "Automation Engineer for RPA bot delivery, production triage, and disciplined work tracking.",
+  "description": "Automation Engineer for RPA solution design, bot development, troubleshooting, and disciplined work tracking.",
   "version": "0.1.0",
   "author": {
     "name": "sean manicad",
@@ -16,6 +16,6 @@
     "aa360",
     "sql",
     "jira",
-    "incident-triage"
+    "planview"
   ]
 }
