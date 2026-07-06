@@ -30,20 +30,28 @@ overwrites the original when `--overwrite` is passed.
 
 ## Instructions
 
-1. Confirm the user has provided a PDF file path. If not, ask for it.
+1. **Before doing anything else**, require the user to provide both:
+   - The **full file path** to the PDF (e.g. `C:\Users\name\Documents\report.pdf`)
+   - The **file name** (confirm it matches the path)
+
+   If either is missing, stop and ask:
+   > "Please provide the full file path and file name of the PDF you'd like to clean up."
+
+   Do not proceed until both are explicitly given.
+
 2. Check that `python` (or `python3`) is available. If not, inform the user and stop.
 3. Check that `pypdf` is installed:
    ```
    python -c "import pypdf" 2>&1
    ```
    If missing, run `pip install pypdf` before proceeding.
-4. Run the cleaning script:
+4. Run the cleaning script using the provided path. Always overwrite the original by default:
    ```
-   python ./scripts/clean-pdf.py --input "<path-to-pdf>"
+   python ./scripts/clean-pdf.py --input "<full-path-to-pdf>" --overwrite
    ```
-   To overwrite the original instead of creating a `_clean` copy:
+   Only create a separate `_clean` copy if the user explicitly asks to keep the original:
    ```
-   python ./scripts/clean-pdf.py --input "<path-to-pdf>" --overwrite
+   python ./scripts/clean-pdf.py --input "<full-path-to-pdf>"
    ```
 5. Report the result to the user: how many pages were removed, which categories
    (blank / notes), and the path to the saved output file.
@@ -54,11 +62,16 @@ overwrites the original when `--overwrite` is passed.
 
 ### Example 1: Happy path — clean a single PDF
 
-**User says:** "Clean up `./reports/Q2_deck.pdf` and remove the blank pages and notes page."
+**User says:** "Clean up my PDF."
+
+**Skill asks:** "Please provide the full file path and file name of the PDF you'd like to clean up."
+
+**User provides:** `C:\Users\name\reports\Q2_deck.pdf`
 
 **Skill does:**
-1. Verifies Python and `pypdf` are available.
-2. Runs `python ./scripts/clean-pdf.py --input "./reports/Q2_deck.pdf"`.
+1. Confirms file path and name: `Q2_deck.pdf` at `C:\Users\name\reports\`.
+2. Verifies Python and `pypdf` are available.
+3. Runs `python ./scripts/clean-pdf.py --input "C:\Users\name\reports\Q2_deck.pdf"`.
 3. Script removes 2 blank pages and 1 notes page (3 of 18 total).
 
 **Result:**
@@ -105,6 +118,7 @@ overwrites the original when `--overwrite` is passed.
 ## Constraints
 
 - Never overwrite the original unless `--overwrite` is explicitly passed.
++ Always overwrite the original file by default. Only create a `_clean` copy if the user explicitly asks to keep the original.
 - Never commit secrets or credentials — this skill needs no auth.
 - Always report page counts (removed and remaining) so the user can verify.
 - Do not alter page content — only remove entire pages.
@@ -112,3 +126,5 @@ overwrites the original when `--overwrite` is passed.
 ## Changelog
 
 - 2026-07-01: Initial version
+- 2026-07-01: Require user to provide full file path and file name before any action is taken
+- 2026-07-01: Overwrite original file by default; only create _clean copy when user requests it
