@@ -116,3 +116,4 @@ The updated document overwrites the original by default, or is saved as
 
 - 2026-07-02: Initial version
 - 2026-07-03: Accessibility line now appended to notes page (page 1); date update targets "This booklet produced:" field on cover page (page 2, between first and second page breaks)
+- 2026-07-06: Accessibility line now matches font name and size of surrounding notes page paragraphs

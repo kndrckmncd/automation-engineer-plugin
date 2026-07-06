@@ -74,7 +74,8 @@ def find_notes_page_end(doc) -> int:
 def add_accessibility_line(doc, notes_page_end: int) -> bool:
     """
     Append "This document has been made accessible" to the notes page (first page)
-    if not already present. Inserts before the first page break.
+    if not already present. Inserts before the first page break, matching the
+    font name and size of the surrounding notes page paragraphs.
     Returns True if the line was added.
     """
     accessibility_text = "This document has been made accessible"
@@ -85,6 +86,18 @@ def add_accessibility_line(doc, notes_page_end: int) -> bool:
         if accessibility_text.lower() in para.text.lower():
             return False
 
+    # Detect font name and size from the first non-empty run on the notes page
+    ref_font_name = None
+    ref_font_size = None
+    for para in paragraphs[:notes_page_end]:
+        for run in para.runs:
+            if run.text.strip() and run.font.name:
+                ref_font_name = run.font.name
+                ref_font_size = run.font.size
+                break
+        if ref_font_name:
+            break
+
     # Insert a new paragraph just before the page break paragraph
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
@@ -92,7 +105,39 @@ def add_accessibility_line(doc, notes_page_end: int) -> bool:
 
     page_break_para = paragraphs[notes_page_end]
     new_para = OxmlElement("w:p")
+
+    # Apply paragraph style to match surrounding text
+    pPr = OxmlElement("w:pPr")
+    pStyle = OxmlElement("w:pStyle")
+    pStyle.set(qn("w:val"), page_break_para._element.find(
+        f".//{qn('w:pStyle')}", page_break_para._element.nsmap or {}
+    ).get(qn("w:val")) if page_break_para._element.find(
+        f".//{qn('w:pStyle')}"
+    ) is not None else "Normal")
+    pPr.append(pStyle)
+    new_para.append(pPr)
+
     new_run = OxmlElement("w:r")
+
+    # Apply run properties (font) to match surrounding text
+    if ref_font_name or ref_font_size:
+        rPr = OxmlElement("w:rPr")
+        if ref_font_name:
+            rFonts = OxmlElement("w:rFonts")
+            rFonts.set(qn("w:ascii"), ref_font_name)
+            rFonts.set(qn("w:hAnsi"), ref_font_name)
+            rPr.append(rFonts)
+        if ref_font_size:
+            sz = OxmlElement("w:sz")
+            # font.size is in EMUs (1pt = 12700); w:sz uses half-points
+            half_pts = str(int(ref_font_size / 6350))
+            sz.set(qn("w:val"), half_pts)
+            szCs = OxmlElement("w:szCs")
+            szCs.set(qn("w:val"), half_pts)
+            rPr.append(sz)
+            rPr.append(szCs)
+        new_run.append(rPr)
+
     new_text = OxmlElement("w:t")
     new_text.text = accessibility_text
     new_run.append(new_text)
