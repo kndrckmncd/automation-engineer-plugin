@@ -1,93 +1,91 @@
 #!/usr/bin/env python3
 """
-Generate a draw.io flowchart from process steps matching team diagram style:
-  - Horizontal left-to-right flow with row wrapping
-  - Rectangles for process steps, diamonds for decisions
-  - Exception paths branch downward in red
-  - Orange circle connectors between rows
-  - Standard steps (Get Work, Audit Report, Update Critical Data) always included
+Generate a Gliffy swim-lane flowchart (.gliffy) from dynamically defined lanes.
 
 Usage:
-    python create-diagram.py --target-url URL --diagram-name TEXT --steps-json FILE
-      [--work-source TEXT] [--platform TEXT] [--systems TEXT]
-
-Inputs:
-    --target-url URL       Confluence page URL to upload attachment to (required)
-    --diagram-name TEXT    Name for the diagram file (required)
-    --steps-json FILE      Path to JSON file from fetch-steps.py (required)
-    --work-source TEXT     Where work items come from (e.g. "Excel audit report")
-    --platform TEXT        RPA platform (e.g. "UiPath", "Power Automate Desktop")
-    --systems TEXT         Comma-separated systems accessed (e.g. "DSS,Salesforce")
-    Environment:
-        CONFLUENCE_EMAIL — Confluence user email (Cloud Basic auth)
-        CONFLUENCE_TOKEN — Confluence API token or PAT
-
-Outputs:
-    JSON to stdout with attachment details and manual import instructions.
-
-Exit codes:
-    0 — success
-    1 — input error
-    2 — API error
+    python create-diagram.py --diagram-name TEXT --lanes-json FILE
+      [--confluence-steps-json FILE]
 """
 
 import argparse
-import base64
 import json
-import os
 import re
 import sys
-import tempfile
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
-
-try:
-    import requests
-except ImportError:
-    print("Error: requests is not installed. Run: pip install requests", file=sys.stderr)
-    sys.exit(1)
-
 
 # ---------------------------------------------------------------------------
 # Layout constants
 # ---------------------------------------------------------------------------
+LANE_LABEL_W   = 80
+BOX_W, BOX_H   = 130, 55
+DIA_W, DIA_H   = 120, 75
+TERM_W, TERM_H = 100, 40
+CONN_W, CONN_H = 36, 36    # row-wrap connector circle
+SUB_W,  SUB_H  = 60, 60    # subprocess / lane-entry circle
+H_GAP          = 18
+V_ROW_GAP      = 140
+EXC_V_GAP      = 22
+LANE_V_PAD     = 45
+CONTENT_X      = LANE_LABEL_W + 20
+STEPS_PER_ROW  = 7
+LAYER_ID       = "layer0"
+MASTER_EXTRA_H = 40         # extra height for loop-back arrow
 
-BOX_W, BOX_H       = 130, 55
-DIA_W, DIA_H       = 110, 85
-START_W, START_H   = 90, 40
-CONN_SIZE          = 44
-H_GAP              = 28
-V_ROW_GAP          = 120       # vertical gap between rows
-EXC_V_GAP          = 50        # vertical gap between exception boxes
-MAX_ROW_WIDTH      = 1150      # wrap after this x
-ROW_BASE_Y         = 80        # y of first row centre
-STEPS_PER_ROW      = 7         # soft limit; wraps when exceeding MAX_ROW_WIDTH
+# ---------------------------------------------------------------------------
+# Gliffy UIDs — confirmed from real .gliffy files
+# ---------------------------------------------------------------------------
+U_PROCESS    = "com.gliffy.shape.flowchart.flowchart_v1.default.process"
+U_DECISION   = "com.gliffy.shape.flowchart.flowchart_v1.default.decision"
+U_TERMINATOR = "com.gliffy.shape.flowchart.flowchart_v1.default.start_end"
+U_CIRCLE     = "com.gliffy.shape.basic.basic_v1.default.circle"
+U_RECT       = "com.gliffy.shape.basic.basic_v1.default.rectangle"
+U_LINE       = "com.gliffy.shape.basic.basic_v1.default.line"
 
-# Styles
-S_PROCESS   = ("rounded=0;whiteSpace=wrap;html=1;fontSize=10;"
-               "fillColor=#ffffff;strokeColor=#333333;")
-S_DECISION  = ("rhombus;whiteSpace=wrap;html=1;fontSize=10;"
-               "fillColor=#ffffff;strokeColor=#333333;")
-S_START     = ("ellipse;whiteSpace=wrap;html=1;fontSize=11;fontStyle=1;"
-               "fillColor=#d5e8d4;strokeColor=#82b366;")
-S_END       = ("ellipse;whiteSpace=wrap;html=1;fontSize=11;fontStyle=1;"
-               "fillColor=#f8cecc;strokeColor=#b85450;")
-S_EXCEPTION = ("rounded=0;whiteSpace=wrap;html=1;fontSize=10;"
-               "fillColor=#f8cecc;strokeColor=#b85450;fontColor=#b85450;")
-S_STOP      = ("doubleEllipse;whiteSpace=wrap;html=1;fontSize=10;fontStyle=1;"
-               "fillColor=#f8cecc;strokeColor=#b85450;fontColor=#b85450;")
-S_CONNECTOR = ("ellipse;whiteSpace=wrap;html=1;fontSize=11;fontStyle=1;"
-               "fillColor=#FF8000;strokeColor=#d36000;fontColor=#ffffff;")
-S_ARROW     = ("edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;"
-               "jettySize=auto;fontSize=10;")
-S_ARROW_EXC = ("edgeStyle=orthogonalEdgeStyle;rounded=0;strokeColor=#b85450;"
-               "fontColor=#b85450;fontSize=10;")
+# Confirmed UID→TID mappings from real Gliffy files.
+# NOTE: circle uses ellipse.basic_v1 (NOT circle.basic_v1 which doesn't exist)
+_TID_MAP = {
+    "com.gliffy.shape.basic.basic_v1.default.rectangle":           "com.gliffy.stencil.rectangle.basic_v1",
+    "com.gliffy.shape.basic.basic_v1.default.round_rectangle":     "com.gliffy.stencil.round_rectangle.basic_v1",
+    "com.gliffy.shape.basic.basic_v1.default.circle":              "com.gliffy.stencil.ellipse.basic_v1",
+    "com.gliffy.shape.flowchart.flowchart_v1.default.process":     "com.gliffy.stencil.rectangle.basic_v1",
+    "com.gliffy.shape.flowchart.flowchart_v1.default.decision":    "com.gliffy.stencil.diamond.basic_v1",
+    "com.gliffy.shape.flowchart.flowchart_v1.default.start_end":   "com.gliffy.stencil.start_end.flowchart_v1",
+    "com.gliffy.shape.flowchart.flowchart_v1.default.connector":   "com.gliffy.stencil.ellipse.basic_v1",
+    "com.gliffy.shape.basic.basic_v1.default.line":                None,
+}
+
+
+def get_tid(uid: str) -> str | None:
+    return _TID_MAP.get(uid)
 
 
 # ---------------------------------------------------------------------------
-# Step classification helpers
+# Colors: (fill, stroke, font-color)
 # ---------------------------------------------------------------------------
+C_PROCESS    = ("#dae8fc", "#6c8ebf", "#000000")
+C_DECISION   = ("#fff2cc", "#d6b656", "#000000")
+C_START      = ("#d5e8d4", "#82b366", "#000000")
+C_END        = ("#f8cecc", "#b85450", "#b85450")
+C_EXCEPTION  = ("#f8cecc", "#b85450", "#b85450")
+C_STOP       = ("#f8cecc", "#b85450", "#b85450")
+C_CONNECTOR  = ("#FF8000", "#d36000", "#ffffff")   # orange: row connectors + subprocess circles
 
+LINE_COLOR     = "#555555"
+LINE_LOOP_CLR  = "#d36000"   # orange dashed for loop-back
+LINE_EXC_COLOR = "#b85450"
+
+LANE_PALETTE = [
+    ("#eef4ff", "#7aa3cc"),
+    ("#efffef", "#7abf7a"),
+    ("#fff5f0", "#cc9988"),
+    ("#fffbee", "#c9b458"),
+    ("#f5eeff", "#9980c9"),
+    ("#efffff", "#58b5b5"),
+]
+
+# ---------------------------------------------------------------------------
+# Step classifiers
+# ---------------------------------------------------------------------------
 DECISION_RE = re.compile(
     r"\b(check|verif|if\s+there|if\s+any|any\s+active|are\s+there|"
     r"whether|found|exists?|has\s+active|active\s+\w+\s+code)\b",
@@ -108,10 +106,6 @@ def classify(text: str) -> str:
 
 
 def split_decision(text: str) -> tuple[str, str | None]:
-    """
-    Split a step into (condition_label, exception_action | None).
-    Splits on '. If there is any', '. Exception', 'If found, Exception'
-    """
     for pattern in [
         r"\.\s*[Ii]f\s+there\s+is\s+any[,.].*",
         r"\.\s*[Ee]xception.*",
@@ -119,380 +113,636 @@ def split_decision(text: str) -> tuple[str, str | None]:
     ]:
         m = re.search(pattern, text)
         if m:
-            condition = text[:m.start()].strip(" .,")
-            exception = text[m.start():].strip(" .,")
-            return condition, exception
+            return text[:m.start()].strip(" .,"), text[m.start():].strip(" .,")
     return text, None
 
 
-def shorten(text: str, max_len: int = 70) -> str:
+def shorten(text: str, max_len: int = 55) -> str:
     return (text[:max_len - 3] + "...") if len(text) > max_len else text
 
 
-def esc(text: str) -> str:
-    return (text.replace("&", "&amp;").replace("<", "&lt;")
-                .replace(">", "&gt;").replace('"', "&quot;"))
+def extract_subprocess_label(step: str) -> str:
+    """Extract short lane name from '[Subprocess] ... (LaneName)' step."""
+    s = step.replace("[Subprocess]", "").strip()
+    m = re.search(r"\(([^)]+)\)", s)
+    return m.group(1) if m else (s.split()[0] if s else "Sub")
 
 
 # ---------------------------------------------------------------------------
-# draw.io XML builder
+# Gliffy JSON builder
 # ---------------------------------------------------------------------------
 
-class Cell:
-    __slots__ = ("cid", "xml")
-
-    def __init__(self, cid: int, xml: str):
-        self.cid = cid
-        self.xml = xml
-
-
-class DiagramBuilder:
+class Gliffy:
     def __init__(self):
-        self._cells: list[Cell] = []
-        self._nid = 2
+        self._bg:    list[dict] = []
+        self._lines: list[dict] = []
+        self._nodes: list[dict] = []
+        self._id: int = 0
 
-    def _alloc(self) -> int:
-        n = self._nid
-        self._nid += 1
-        return n
+    def _nid(self) -> int:
+        v = self._id; self._id += 1; return v
 
-    def vertex(self, x: int, y: int, w: int, h: int,
-               label: str, style: str) -> int:
-        cid = self._alloc()
-        self._cells.append(Cell(cid,
-            f'<mxCell id="{cid}" value="{esc(label)}" style="{style}" '
-            f'vertex="1" parent="1">'
-            f'<mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry"/>'
-            f'</mxCell>'
-        ))
-        return cid
+    def _text_child(self, w: int, h: int, text: str, font_color: str) -> dict:
+        return {
+            "x": 0.0, "y": 0.0, "rotation": 0.0, "id": self._nid(),
+            "uid": None,
+            "width": float(w), "height": float(h),
+            "lockAspectRatio": False, "lockShape": False,
+            "order": "auto", "hidden": False,
+            "flipHorizontal": False, "flipVertical": False,
+            "graphic": {
+                "type": "Text",
+                "Text": {
+                    "tid": None,
+                    "valign": "middle",
+                    "overflow": "none",
+                    "vposition": "none",
+                    "hposition": "none",
+                    "type": "fixed",
+                    "lineTValue": None, "linePerpValue": None,
+                    "cardinalityType": None,
+                    "html": (
+                        f'<p style="text-align:center;">'
+                        f'<span style="font-family:Arial;font-size:10px;'
+                        f'color:{font_color};">{text}</span></p>'
+                    ),
+                    "paddingLeft": 5, "paddingRight": 5,
+                    "paddingBottom": 5, "paddingTop": 5,
+                    "outerPaddingLeft": 6, "outerPaddingRight": 6,
+                    "outerPaddingBottom": 2, "outerPaddingTop": 6,
+                }
+            },
+            "children": [],
+            "layerId": LAYER_ID,
+            "constraints": {"constraints": []},
+        }
 
-    def edge(self, src: int, tgt: int, label: str = "",
-             style: str = S_ARROW) -> int:
-        cid = self._alloc()
-        self._cells.append(Cell(cid,
-            f'<mxCell id="{cid}" value="{esc(label)}" style="{style}" '
-            f'edge="1" source="{src}" target="{tgt}" parent="1">'
-            f'<mxGeometry relative="1" as="geometry"/>'
-            f'</mxCell>'
-        ))
-        return cid
+    def _make(self, uid: str, x: int, y: int, w: int, h: int,
+              fill: str, stroke: str, font_color: str,
+              text: str, rotation: int = 0,
+              stroke_w: float = 1.5) -> dict:
+        node_id = self._nid()
+        return {
+            "x": float(x), "y": float(y), "rotation": float(rotation),
+            "id": node_id,
+            "uid": uid,
+            "width": float(w), "height": float(h),
+            "lockAspectRatio": False, "lockShape": False,
+            "order": node_id, "hidden": False,
+            "flipHorizontal": False, "flipVertical": False,
+            "graphic": {
+                "type": "Shape",
+                "Shape": {
+                    "tid": get_tid(uid),
+                    "strokeWidth": stroke_w,
+                    "strokeColor": stroke,
+                    "fillColor": fill,
+                    "gradient": False, "dashStyle": None,
+                    "dropShadow": False, "state": 0,
+                    "shadowX": 0.0, "shadowY": 0.0,
+                    "opacity": 1.0,
+                }
+            },
+            "children": [self._text_child(w, h, text, font_color)] if text else [],
+            "layerId": LAYER_ID,
+            "linkMap": [],
+        }
 
-    def to_xml(self, page_w: int, page_h: int) -> str:
-        body = "\n    ".join(c.xml for c in self._cells)
-        return (
-            f'<mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" '
-            f'guides="1" tooltips="1" connect="1" arrows="1" fold="1" '
-            f'page="1" pageScale="1" '
-            f'pageWidth="{page_w}" pageHeight="{page_h}" '
-            f'math="0" shadow="0">'
-            f'<root>'
-            f'<mxCell id="0"/>'
-            f'<mxCell id="1" parent="0"/>'
-            f'\n    {body}\n'
-            f'</root></mxGraphModel>'
-        )
+    def node(self, uid: str, x: int, y: int, w: int, h: int,
+             fill: str, stroke: str, font_color: str, text: str) -> int:
+        s = self._make(uid, x, y, w, h, fill, stroke, font_color, text)
+        self._nodes.append(s)
+        return s["id"]
+
+    def bg_rect(self, x: int, y: int, w: int, h: int,
+                fill: str, stroke: str, stroke_w: float = 2.0,
+                text: str = "", font_color: str = "#333333",
+                rotation: int = 0) -> int:
+        s = self._make(U_RECT, x, y, w, h, fill, stroke, font_color,
+                       text, rotation=rotation, stroke_w=stroke_w)
+        s["order"] = 0
+        self._bg.append(s)
+        return s["id"]
+
+    def line(self, src_id: int, dst_id: int,
+             src_px: float, src_py: float,
+             dst_px: float, dst_py: float,
+             color: str = LINE_COLOR, label: str = "",
+             dashed: bool = False) -> int:
+        line_id = self._nid()
+        children = []
+        if label:
+            lbl_id = self._nid()
+            children = [{
+                "x": 0.0, "y": 0.0, "rotation": 0.0, "id": lbl_id,
+                "uid": None, "width": 60.0, "height": 20.0,
+                "lockAspectRatio": False, "lockShape": False,
+                "order": "auto", "hidden": False,
+                "flipHorizontal": False, "flipVertical": False,
+                "graphic": {
+                    "type": "Text",
+                    "Text": {
+                        "tid": None, "valign": "top",
+                        "overflow": "none", "vposition": "none", "hposition": "none",
+                        "type": "fixed",
+                        "lineTValue": 0.5, "linePerpValue": None,
+                        "cardinalityType": None,
+                        "html": (
+                            f'<p><span style="font-family:Arial;font-size:9px;'
+                            f'color:{color};">{label}</span></p>'
+                        ),
+                        "paddingLeft": 2, "paddingRight": 2,
+                        "paddingBottom": 2, "paddingTop": 2,
+                        "outerPaddingLeft": 6, "outerPaddingRight": 6,
+                        "outerPaddingBottom": 2, "outerPaddingTop": 6,
+                    }
+                },
+                "children": [],
+                "layerId": LAYER_ID,
+                "constraints": {"constraints": []},
+            }]
+        s = {
+            "x": 0.0, "y": 0.0, "rotation": 0.0, "id": line_id,
+            "uid": U_LINE,
+            "width": 10.0, "height": 10.0,
+            "lockAspectRatio": False, "lockShape": False,
+            "order": 0, "hidden": False,
+            "flipHorizontal": False, "flipVertical": False,
+            "graphic": {
+                "type": "Line",
+                "Line": {
+                    "strokeWidth": 1.5, "strokeColor": color,
+                    "fillColor": "none",
+                    "dashStyle": "8.0,4.0" if dashed else None,
+                    "startArrow": 0, "endArrow": 1,
+                    "startArrowRotation": "auto",
+                    "endArrowRotation": "auto",
+                    "ortho": False,
+                    "interpolationType": "linear",
+                    "cornerRadius": None,
+                    "controlPath": [[0.0, 0.0], [10.0, 0.0]],
+                    "lockSegments": {},
+                }
+            },
+            "constraints": {
+                "constraints": [],
+                "startConstraint": {
+                    "type": "StartPositionConstraint",
+                    "StartPositionConstraint": {
+                        "nodeId": src_id, "px": src_px, "py": src_py,
+                    }
+                },
+                "endConstraint": {
+                    "type": "EndPositionConstraint",
+                    "EndPositionConstraint": {
+                        "nodeId": dst_id, "px": dst_px, "py": dst_py,
+                    }
+                },
+            },
+            "children": children,
+            "layerId": LAYER_ID,
+            "linkMap": [],
+        }
+        self._lines.append(s)
+        return line_id
+
+    def free_line(self, control_path: list[list[float]],
+                  color: str = LINE_COLOR, dashed: bool = False,
+                  label: str = "") -> int:
+        """Unconstrained line using absolute-coordinate control path."""
+        line_id = self._nid()
+        children = []
+        if label:
+            lbl_id = self._nid()
+            children = [{
+                "x": 0.0, "y": 0.0, "rotation": 0.0, "id": lbl_id,
+                "uid": None, "width": 50.0, "height": 18.0,
+                "lockAspectRatio": False, "lockShape": False,
+                "order": "auto", "hidden": False,
+                "flipHorizontal": False, "flipVertical": False,
+                "graphic": {
+                    "type": "Text",
+                    "Text": {
+                        "tid": None, "valign": "top",
+                        "overflow": "none", "vposition": "none", "hposition": "none",
+                        "type": "fixed", "lineTValue": 0.15, "linePerpValue": None,
+                        "cardinalityType": None,
+                        "html": (
+                            f'<p><span style="font-family:Arial;font-size:9px;'
+                            f'color:{color};">{label}</span></p>'
+                        ),
+                        "paddingLeft": 2, "paddingRight": 2,
+                        "paddingBottom": 2, "paddingTop": 2,
+                        "outerPaddingLeft": 6, "outerPaddingRight": 6,
+                        "outerPaddingBottom": 2, "outerPaddingTop": 6,
+                    }
+                },
+                "children": [], "layerId": LAYER_ID,
+                "constraints": {"constraints": []},
+            }]
+        # controlPath is relative to line x,y; set line at first point
+        ox, oy = control_path[0]
+        rel_path = [[p[0] - ox, p[1] - oy] for p in control_path]
+        s = {
+            "x": float(ox), "y": float(oy), "rotation": 0.0, "id": line_id,
+            "uid": U_LINE, "width": 10.0, "height": 10.0,
+            "lockAspectRatio": False, "lockShape": False,
+            "order": 0, "hidden": False,
+            "flipHorizontal": False, "flipVertical": False,
+            "graphic": {
+                "type": "Line",
+                "Line": {
+                    "strokeWidth": 1.5, "strokeColor": color,
+                    "fillColor": "none",
+                    "dashStyle": "8.0,4.0" if dashed else None,
+                    "startArrow": 0, "endArrow": 1,
+                    "startArrowRotation": "auto", "endArrowRotation": "auto",
+                    "ortho": False, "interpolationType": "linear",
+                    "cornerRadius": None,
+                    "controlPath": rel_path,
+                    "lockSegments": {},
+                }
+            },
+            "constraints": {"constraints": []},
+            "children": children, "layerId": LAYER_ID, "linkMap": [],
+        }
+        self._lines.append(s)
+        return line_id
+
+    def all_objects(self) -> list[dict]:
+        return self._bg + self._lines + self._nodes
+
+    def to_gliffy(self, title: str) -> dict:
+        all_o = self.all_objects()
+        x2s = [s["x"] + s["width"]  for s in all_o] + [800.0]
+        y2s = [s["y"] + s["height"] for s in all_o] + [400.0]
+        xs  = [s["x"] for s in all_o] + [0.0]
+        ys  = [s["y"] for s in all_o] + [0.0]
+        w = int(max(x2s)) + 80
+        h = int(max(y2s)) + 80
+        return {
+            "contentType": "application/gliffy+json",
+            "version": "1.3",
+            "metadata": {
+                "title": title,
+                "revision": 0,
+                "exportBorder": False,
+                "loadPosition": "default",
+                "libraries": [
+                    "com.gliffy.libraries.basic.basic_v1.default",
+                    "com.gliffy.libraries.flowchart.flowchart_v1.default",
+                ],
+                "lastSerialized": 1,
+                "analyticsProduct": "",
+            },
+            "embeddedResources": {"index": 0, "resources": []},
+            "stage": {
+                "background": "#FFFFFF",
+                "width": w, "height": h,
+                "maxWidth": 5000, "maxHeight": 5000,
+                "exportBorder": False,
+                "gridOn": True, "snapToGrid": True,
+                "drawingGuidesOn": True, "pageBreaksOn": False,
+                "printGridOn": False, "printPaper": "LETTER",
+                "printShrinkToFit": False, "printPortrait": False,
+                "autoFit": True,
+                "fitBB": {
+                    "min": {"x": int(min(xs)), "y": int(min(ys))},
+                    "max": {"x": int(max(x2s)), "y": int(max(y2s))},
+                },
+                "viewportType": "default",
+                "nodeIndex": self._id,
+                "shapeStyles": {}, "lineStyles": {}, "textStyles": {},
+                "themeData": None,
+                "layers": [{
+                    "guid": LAYER_ID, "order": 0, "name": "Layer 0",
+                    "active": True, "locked": False,
+                    "visible": True, "nodeIndex": 100,
+                }],
+                "objects": all_o,
+            },
+        }
 
 
 # ---------------------------------------------------------------------------
-# Flowchart layout engine
+# Height calculators
 # ---------------------------------------------------------------------------
 
-def build_drawio_xml(diagram_name: str, steps: list[str]) -> str:
-    b = DiagramBuilder()
+def master_lane_height(subprocess_count: int) -> int:
+    """Master is a single row; extra height below for loop-back arrow."""
+    return 2 * LANE_V_PAD + DIA_H + MASTER_EXTRA_H
 
-    cx = 40
-    row_y = ROW_BASE_Y
+
+def subprocess_lane_height(steps: list[str]) -> int:
+    n_rows = max(1, -(-len(steps) // STEPS_PER_ROW))
+    h = 2 * LANE_V_PAD + BOX_H + max(0, n_rows - 1) * V_ROW_GAP
+    has_exc = any(
+        split_decision(s)[1] is not None
+        for s in steps if classify(s) == "decision"
+    )
+    if has_exc:
+        h += EXC_V_GAP + BOX_H + EXC_V_GAP + TERM_H + 10
+    return h
+
+
+# ---------------------------------------------------------------------------
+# Master lane builder
+# ---------------------------------------------------------------------------
+
+def build_master_lane(g: Gliffy, system_name: str,
+                      subprocess_names: list[str],
+                      lane_top: int) -> dict:
+    """
+    Auto-build the Master orchestration lane.
+    Flow: START → Check availability → Inserter → [subprocesses]
+          → More work? → No: audit report → END
+                       → Yes: loop-back (drawn separately)
+    Returns node positions needed for the loop-back arrow.
+    """
+    row_cy = lane_top + LANE_V_PAD + DIA_H // 2
+    cur_x  = CONTENT_X
+
+    # START
+    prev_id = g.node(U_TERMINATOR, cur_x, row_cy - TERM_H // 2,
+                     TERM_W, TERM_H, *C_START, "START")
+    cur_x += TERM_W + H_GAP
+
+    # Check system availability
+    avail_id = g.node(U_DECISION, cur_x, row_cy - DIA_H // 2,
+                      DIA_W, DIA_H, *C_DECISION,
+                      shorten(f"Check {system_name} availability"))
+    g.line(prev_id, avail_id, 1.0, 0.5, 0.0, 0.5)
+    # Unavailable → STOP (drops below)
+    exc_y   = row_cy + DIA_H // 2 + EXC_V_GAP
+    stop_id = g.node(U_TERMINATOR, cur_x + (DIA_W - TERM_W) // 2,
+                     exc_y, TERM_W, TERM_H, *C_STOP, "STOP")
+    g.line(avail_id, stop_id, 0.5, 1.0, 0.5, 0.0, LINE_EXC_COLOR, "Unavailable")
+    cur_x += DIA_W + H_GAP
+    prev_id = avail_id
+
+    # Inserter subprocess call — record position for loop-back
+    ins_x, ins_y = cur_x, row_cy - SUB_H // 2
+    ins_id = g.node(U_CIRCLE, ins_x, ins_y, SUB_W, SUB_H,
+                    *C_CONNECTOR, "Inserter")
+    g.line(prev_id, ins_id, 1.0, 0.5, 0.0, 0.5, LINE_COLOR, "Available")
+    cur_x  += SUB_W + H_GAP
+    prev_id = ins_id
+
+    # Subprocess lane calls
+    for name in subprocess_names:
+        sid = g.node(U_CIRCLE, cur_x, row_cy - SUB_H // 2,
+                     SUB_W, SUB_H, *C_CONNECTOR, shorten(name, 18))
+        g.line(prev_id, sid, 1.0, 0.5, 0.0, 0.5)
+        cur_x  += SUB_W + H_GAP
+        prev_id = sid
+
+    # "More work available?" decision — record position for loop-back
+    mw_x, mw_y = cur_x, row_cy - DIA_H // 2
+    mw_id = g.node(U_DECISION, mw_x, mw_y, DIA_W, DIA_H,
+                   *C_DECISION, "More work available?")
+    g.line(prev_id, mw_id, 1.0, 0.5, 0.0, 0.5)
+    cur_x  += DIA_W + H_GAP
+
+    # No → Create audit report → END
+    audit_id = g.node(U_PROCESS, cur_x, row_cy - BOX_H // 2,
+                      BOX_W, BOX_H, *C_PROCESS, "Create audit report")
+    g.line(mw_id, audit_id, 1.0, 0.5, 0.0, 0.5, LINE_COLOR, "No")
+    cur_x += BOX_W + H_GAP
+
+    end_id = g.node(U_TERMINATOR, cur_x, row_cy - TERM_H // 2,
+                    TERM_W, TERM_H, *C_END, "END")
+    g.line(audit_id, end_id, 1.0, 0.5, 0.0, 0.5)
+
+    return {"ins_x": ins_x, "ins_y": ins_y,
+            "mw_x":  mw_x,  "mw_y":  mw_y}
+
+
+def add_loop_back(g: Gliffy, master_info: dict) -> None:
+    """
+    Draw the dashed 'Yes' loop-back from 'More work?' bottom
+    down → left → up to Inserter circle bottom.
+    """
+    ins_cx     = master_info["ins_x"] + SUB_W / 2
+    ins_bottom = master_info["ins_y"] + SUB_H
+    mw_cx      = master_info["mw_x"]  + DIA_W / 2
+    mw_bottom  = master_info["mw_y"]  + DIA_H
+    loop_y     = mw_bottom + 22
+
+    g.free_line(
+        [[mw_cx, mw_bottom], [mw_cx, loop_y], [ins_cx, loop_y], [ins_cx, ins_bottom]],
+        color=LINE_LOOP_CLR, dashed=True, label="Yes",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inserter lane (Lane 2) — always auto-generated
+# ---------------------------------------------------------------------------
+
+def build_inserter_lane(g: Gliffy, inserter_source: str, lane_top: int) -> None:
+    layout_subprocess_lane(
+        g,
+        steps=[f"Get work from {inserter_source}", "Insert record to database"],
+        lane_top=lane_top,
+        entry_label="Inserter",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generic subprocess lane layout (Lane 3+)
+# ---------------------------------------------------------------------------
+
+def layout_subprocess_lane(g: Gliffy, steps: list[str],
+                            lane_top: int, entry_label: str) -> None:
+    """
+    Entry orange circle → steps (with row wrapping) → Return to Master orange circle.
+    """
+    row_cy    = lane_top + LANE_V_PAD + BOX_H // 2
+    cur_x     = CONTENT_X
     row_count = 0
-    conn_letter = ord("A")
+    conn_num  = 1
 
-    # Track the previous shape id for arrows
-    prev_id: int | None = None
-
-    # Pending exceptions: list of (decision_id, exception_text, row_y_at_time)
-    pending_exc: list[tuple[int, str, int]] = []
-
-    def center_y(shape_h: int) -> int:
-        """Y coord to vertically centre shape on the current row."""
-        return row_y + (BOX_H - shape_h) // 2
-
-    def need_wrap(next_w: int) -> bool:
-        return cx + next_w > MAX_ROW_WIDTH
-
-    def wrap_row(nonlocal_refs: dict) -> None:
-        """Place end connector, advance to next row, place start connector."""
-        nonlocal_refs["cx"] = cx
-        nonlocal_refs["row_y"] = row_y
-        nonlocal_refs["row_count"] = row_count
-        nonlocal_refs["conn_letter"] = conn_letter
-
-        letter = chr(nonlocal_refs["conn_letter"])
-        end_cx = nonlocal_refs["cx"]
-        end_ry = nonlocal_refs["row_y"]
-
-        conn_y = end_ry + (BOX_H - CONN_SIZE) // 2
-        end_conn_id = b.vertex(end_cx, conn_y, CONN_SIZE, CONN_SIZE,
-                               letter, S_CONNECTOR)
-        if nonlocal_refs["prev_id"] is not None:
-            b.edge(nonlocal_refs["prev_id"], end_conn_id)
-
-        new_ry = end_ry + BOX_H + V_ROW_GAP
-        start_conn_id = b.vertex(40, new_ry + (BOX_H - CONN_SIZE) // 2,
-                                 CONN_SIZE, CONN_SIZE, letter, S_CONNECTOR)
-        b.edge(end_conn_id, start_conn_id,
-               style=S_ARROW + "exitX=0.5;exitY=1;exitDx=0;exitDy=0;"
-                              "entryX=0.5;entryY=0;entryDx=0;entryDy=0;")
-
-        nonlocal_refs["cx"] = 40 + CONN_SIZE + H_GAP
-        nonlocal_refs["row_y"] = new_ry
-        nonlocal_refs["row_count"] += 1
-        nonlocal_refs["conn_letter"] += 1
-        nonlocal_refs["prev_id"] = start_conn_id
-
-    # Use a mutable container to share state with the helper
-    state = {
-        "cx": cx, "row_y": row_y, "row_count": row_count,
-        "conn_letter": conn_letter, "prev_id": None
-    }
-
-    # --- Start shape ---
-    sy = state["row_y"] + (BOX_H - START_H) // 2
-    start_id = b.vertex(state["cx"], sy, START_W, START_H, "START", S_START)
-    state["prev_id"] = start_id
-    state["cx"] += START_W + H_GAP
-
-    # --- Process each step ---
+    classified: list[tuple[str, str, str | None]] = []
     for step in steps:
         kind = classify(step)
+        if kind == "decision":
+            cond, exc = split_decision(step)
+            classified.append(("decision", shorten(cond), shorten(exc) if exc else None))
+        else:
+            classified.append((kind, shorten(step), None))
+
+    # Entry circle
+    prev_id = g.node(U_CIRCLE, cur_x, row_cy - SUB_H // 2,
+                     SUB_W, SUB_H, *C_CONNECTOR, shorten(entry_label, 18))
+    cur_x += SUB_W + H_GAP
+
+    for kind, label, exc_label in classified:
+        # Row wrap
+        if row_count >= STEPS_PER_ROW:
+            out_id = g.node(U_CIRCLE, cur_x, row_cy - CONN_H // 2,
+                            CONN_W, CONN_H, *C_CONNECTOR, str(conn_num))
+            g.line(prev_id, out_id, 1.0, 0.5, 0.0, 0.5)
+            row_cy += V_ROW_GAP
+            in_id = g.node(U_CIRCLE, cur_x, row_cy - CONN_H // 2,
+                           CONN_W, CONN_H, *C_CONNECTOR, str(conn_num))
+            g.line(out_id, in_id, 0.5, 1.0, 0.5, 0.0)
+            conn_num += 1
+            prev_id = in_id
+            cur_x   += CONN_W + H_GAP
+            row_count = 0
 
         if kind == "decision":
-            cond, exc_text = split_decision(step)
-            shape_w, shape_h = DIA_W, DIA_H
+            sid = g.node(U_DECISION, cur_x, row_cy - DIA_H // 2,
+                         DIA_W, DIA_H, *C_DECISION, label)
+            g.line(prev_id, sid, 1.0, 0.5, 0.0, 0.5, LINE_COLOR, "Yes")
+            if exc_label:
+                exc_y  = row_cy + DIA_H // 2 + EXC_V_GAP
+                exc_id = g.node(U_PROCESS, cur_x, exc_y,
+                                BOX_W, BOX_H, *C_EXCEPTION, exc_label)
+                g.line(sid, exc_id, 0.5, 1.0, 0.5, 0.0, LINE_EXC_COLOR, "No")
+                stp_id = g.node(U_TERMINATOR,
+                                cur_x + (BOX_W - TERM_W) // 2,
+                                exc_y + BOX_H + EXC_V_GAP,
+                                TERM_W, TERM_H, *C_STOP, "STOP")
+                g.line(exc_id, stp_id, 0.5, 1.0, 0.5, 0.0, LINE_EXC_COLOR)
+            prev_id = sid
+            cur_x  += DIA_W + H_GAP
+
+        elif kind == "exception":
+            sid = g.node(U_PROCESS, cur_x, row_cy - BOX_H // 2,
+                         BOX_W, BOX_H, *C_EXCEPTION, label)
+            g.line(prev_id, sid, 1.0, 0.5, 0.0, 0.5)
+            prev_id = sid
+            cur_x  += BOX_W + H_GAP
+
         else:
-            shape_w, shape_h = BOX_W, BOX_H
+            sid = g.node(U_PROCESS, cur_x, row_cy - BOX_H // 2,
+                         BOX_W, BOX_H, *C_PROCESS, label)
+            g.line(prev_id, sid, 1.0, 0.5, 0.0, 0.5)
+            prev_id = sid
+            cur_x  += BOX_W + H_GAP
 
-        # Wrap if needed
-        if state["cx"] + shape_w > MAX_ROW_WIDTH:
-            wrap_row(state)
+        row_count += 1
 
-        shape_y = state["row_y"] + (BOX_H - shape_h) // 2
-
-        if kind == "decision":
-            short_cond = shorten(cond, 55)
-            shape_id = b.vertex(state["cx"], shape_y,
-                                shape_w, shape_h, short_cond, S_DECISION)
-            if state["prev_id"] is not None:
-                b.edge(state["prev_id"], shape_id)
-            if exc_text:
-                pending_exc.append((shape_id, exc_text, state["row_y"]))
-        else:
-            short_step = shorten(step, 70)
-            style = S_EXCEPTION if kind == "exception" else S_PROCESS
-            shape_id = b.vertex(state["cx"], shape_y,
-                                shape_w, shape_h, short_step, style)
-            if state["prev_id"] is not None:
-                arrow_label = "No" if classify(step) == "decision" else ""
-                b.edge(state["prev_id"], shape_id)
-
-        state["prev_id"] = shape_id
-        state["cx"] += shape_w + H_GAP
-
-    # --- End shape ---
-    if state["cx"] + START_W > MAX_ROW_WIDTH:
-        wrap_row(state)
-    end_y = state["row_y"] + (BOX_H - START_H) // 2
-    end_id = b.vertex(state["cx"], end_y, START_W, START_H, "END", S_END)
-    if state["prev_id"] is not None:
-        b.edge(state["prev_id"], end_id)
-
-    # --- Exception branches (below all rows) ---
-    exc_base_y = state["row_y"] + BOX_H + V_ROW_GAP + 20
-    for dia_id, exc_text, _ in pending_exc:
-        short_exc = shorten(exc_text, 80)
-        exc_id = b.vertex(40, exc_base_y, BOX_W + 40, BOX_H,
-                          short_exc, S_EXCEPTION)
-        b.edge(dia_id, exc_id, "Yes",
-               S_ARROW_EXC + "exitX=0.5;exitY=1;exitDx=0;exitDy=0;"
-                             "entryX=0.5;entryY=0;entryDx=0;entryDy=0;")
-        # No label on the main (right) path
-        stop_y = exc_base_y + BOX_H + EXC_V_GAP // 2
-        stop_id = b.vertex(40 + (BOX_W + 40 - 60) // 2, stop_y,
-                           60, 40, "STOP", S_STOP)
-        b.edge(exc_id, stop_id,
-               style=S_ARROW_EXC + "exitX=0.5;exitY=1;exitDx=0;exitDy=0;"
-                                   "entryX=0.5;entryY=0;entryDx=0;entryDy=0;")
-        exc_base_y = stop_y + 40 + EXC_V_GAP
-
-    page_w = 1169
-    page_h = max(827, exc_base_y + 100)
-    return b.to_xml(page_w, page_h)
+    # Return to Master circle
+    ret_id = g.node(U_CIRCLE, cur_x, row_cy - SUB_H // 2,
+                    SUB_W, SUB_H, *C_CONNECTOR, "→ Master")
+    g.line(prev_id, ret_id, 1.0, 0.5, 0.0, 0.5)
 
 
 # ---------------------------------------------------------------------------
-# Standard step injection
+# Diagram assembly
 # ---------------------------------------------------------------------------
 
-def inject_standard_steps(steps: list[str],
-                           work_source: str,
-                           platform: str,
-                           systems: str) -> list[str]:
-    """Prepend Get Work + Audit Report if missing; append Update Critical Data."""
-    lower_steps = [s.lower() for s in steps]
+def build_diagram(diagram_name: str, system_name: str,
+                  inserter_source: str,
+                  subprocess_lanes: list[dict]) -> dict:
+    g = Gliffy()
 
-    prefix = []
-    if not any("get work" in s or "retrieve work" in s for s in lower_steps):
-        src = f" from {work_source}" if work_source else ""
-        pfm = f" ({platform})" if platform else ""
-        prefix.append(f"Get Work{pfm}: Retrieve work items{src}.")
+    sub_names  = [l["name"] for l in subprocess_lanes]
+    master_h   = master_lane_height(len(sub_names))
+    inserter_h = subprocess_lane_height(["get work", "insert"])
+    sub_hs     = [subprocess_lane_height(l["steps"]) for l in subprocess_lanes]
 
-    if not any("audit report" in s for s in lower_steps):
-        prefix.append("Generate Audit Report: Review Bot output and validate work queue.")
+    tops: list[int] = []
+    y = 0
+    for h in [master_h, inserter_h] + sub_hs:
+        tops.append(y); y += h
+    total_h = y
 
-    suffix = []
-    if not any("update critical" in s or "critical data" in s for s in lower_steps):
-        sys_note = f" in {systems}" if systems else ""
-        suffix.append(f"Update Critical Data{sys_note}: Record process completion and update tracking logs.")
+    diagram_w = (CONTENT_X + TERM_W + H_GAP + DIA_W + H_GAP
+                 + (1 + len(sub_names)) * (SUB_W + H_GAP)
+                 + DIA_W + H_GAP + BOX_W + H_GAP + TERM_W + 100)
 
-    return prefix + steps + suffix
+    # Pool outline
+    g.bg_rect(0, 0, diagram_w, total_h, "none", "#555555", stroke_w=2.5)
+
+    # Lane backgrounds + rotated labels
+    all_lanes   = [{"name": "Master"}, {"name": "Inserter"}] + \
+                  [{"name": l["name"]} for l in subprocess_lanes]
+    all_heights = [master_h, inserter_h] + sub_hs
+
+    for i, (lane, h, top) in enumerate(zip(all_lanes, all_heights, tops)):
+        bg_fill, bg_stroke = LANE_PALETTE[i % len(LANE_PALETTE)]
+        g.bg_rect(0, top, diagram_w, h, bg_fill, bg_stroke)
+        g.bg_rect(0, top, LANE_LABEL_W, h, "#e0e0e0", "#555555", stroke_w=1.0)
+        lbl_w = max(h - 10, 60)
+        lbl_h = LANE_LABEL_W - 10
+        g.bg_rect(
+            LANE_LABEL_W // 2 - lbl_w // 2, top + h // 2 - lbl_h // 2,
+            lbl_w, lbl_h, "none", "none", stroke_w=0.0,
+            text=lane["name"], font_color="#333333", rotation=270,
+        )
+
+    # Build content
+    master_info = build_master_lane(g, system_name, sub_names, tops[0])
+    build_inserter_lane(g, inserter_source, tops[1])
+    for lane, top in zip(subprocess_lanes, tops[2:]):
+        layout_subprocess_lane(g, lane["steps"], top, entry_label=lane["name"])
+    add_loop_back(g, master_info)
+
+    return g.to_gliffy(diagram_name)
 
 
 # ---------------------------------------------------------------------------
-# Auth & Confluence helpers
+# CLI
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate draw.io flowchart and upload to Confluence.")
-    p.add_argument("--target-url", required=True)
+    p = argparse.ArgumentParser()
     p.add_argument("--diagram-name", required=True)
-    p.add_argument("--steps-json", required=True)
-    p.add_argument("--work-source", default="")
-    p.add_argument("--platform", default="")
-    p.add_argument("--systems", default="")
+    p.add_argument("--config-json",  required=True,
+                   help="JSON: {system_name, inserter_source, subprocess_lanes:[{name, steps}]}")
+    p.add_argument("--confluence-steps-json", default="",
+                   help="Steps JSON from fetch-steps.py")
+    p.add_argument("--confluence-lane-name", default="",
+                   help="Subprocess lane name to inject Confluence steps into")
     return p.parse_args()
 
-
-def get_auth_headers(email: str | None, token: str) -> dict:
-    if email:
-        creds = base64.b64encode(f"{email}:{token}".encode()).decode()
-        return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-
-def extract_page_id_and_base(url: str) -> tuple[str | None, str]:
-    parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    m = re.search(r"/pages/(\d+)", parsed.path)
-    if m:
-        return m.group(1), base + "/wiki" if "/wiki" in parsed.path else base
-    qs = parse_qs(parsed.query)
-    if "pageId" in qs:
-        return qs["pageId"][0], base
-    return None, base
-
-
-def upload_attachment(base_url: str, page_id: str,
-                      file_path: Path, auth_headers: dict) -> str:
-    url = f"{base_url}/rest/api/content/{page_id}/child/attachment"
-    up_headers = {"Authorization": auth_headers["Authorization"],
-                  "X-Atlassian-Token": "no-check"}
-
-    # Remove existing attachment with same name
-    chk = requests.get(f"{url}?filename={file_path.name}",
-                       headers=auth_headers, timeout=30)
-    if chk.ok:
-        for att in chk.json().get("results", []):
-            requests.delete(f"{base_url}/rest/api/content/{att['id']}",
-                            headers=auth_headers, timeout=30)
-
-    with open(file_path, "rb") as f:
-        r = requests.post(url, headers=up_headers,
-                          files={"file": (file_path.name, f, "application/octet-stream")},
-                          data={"minorEdit": "true",
-                                "comment": "Auto-generated draw.io flowchart"},
-                          timeout=30)
-    try:
-        r.raise_for_status()
-    except requests.exceptions.HTTPError:
-        print(f"Upload error {r.status_code}: {r.text}", file=sys.stderr)
-        sys.exit(2)
-
-    dl = r.json()["results"][0].get("_links", {}).get("download", "")
-    return f"{base_url}{dl}" if dl else url
-
-
-def api_get(url: str, headers: dict) -> dict:
-    try:
-        r = requests.get(url, headers=headers, timeout=30)
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.HTTPError as e:
-        print(f"API error: {e}", file=sys.stderr)
-        sys.exit(2)
-    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-        print(f"Connection error: {e}", file=sys.stderr)
-        sys.exit(2)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     args = parse_args()
 
-    email = os.environ.get("CONFLUENCE_EMAIL")
-    token = os.environ.get("CONFLUENCE_TOKEN")
-    if not token:
-        print("Error: CONFLUENCE_TOKEN is required.", file=sys.stderr)
-        sys.exit(1)
+    with open(args.config_json, encoding="utf-8") as f:
+        cfg = json.load(f)
 
-    with open(args.steps_json) as f:
-        steps_data = json.load(f)
+    system_name      = cfg.get("system_name", "System")
+    inserter_source  = cfg.get("inserter_source", "work source")
+    subprocess_lanes = cfg.get("subprocess_lanes", [])
 
-    raw_steps = [s.strip() for s in steps_data.get("steps", []) if s.strip()]
-    if not raw_steps:
-        print("Error: No steps found in steps JSON.", file=sys.stderr)
-        sys.exit(1)
+    if not subprocess_lanes:
+        print("Error: No subprocess_lanes defined.", file=sys.stderr); sys.exit(1)
 
-    steps = inject_standard_steps(raw_steps, args.work_source,
-                                   args.platform, args.systems)
+    if args.confluence_steps_json:
+        with open(args.confluence_steps_json, encoding="utf-8") as f:
+            raw = [s.strip() for s in json.load(f).get("steps", []) if s.strip()]
+        target = args.confluence_lane_name
+        for lane in subprocess_lanes:
+            if (not target and lane.get("confluence_lane")) or lane["name"] == target:
+                lane["steps"] = raw; break
 
-    headers = get_auth_headers(email, token)
-    page_id, base_url = extract_page_id_and_base(args.target_url)
-    if not page_id:
-        print(f"Error: Could not extract page ID from: {args.target_url}", file=sys.stderr)
-        sys.exit(1)
+    for lane in subprocess_lanes:
+        if not lane.get("steps"):
+            print(f"Error: Lane '{lane.get('name','?')}' has no steps.",
+                  file=sys.stderr); sys.exit(1)
 
-    page = api_get(f"{base_url}/rest/api/content/{page_id}?expand=title", headers)
-    page_title = page.get("title", "Unknown")
+    diagram = build_diagram(args.diagram_name, system_name,
+                            inserter_source, subprocess_lanes)
 
-    # Generate draw.io XML
-    diagram_xml = build_drawio_xml(args.diagram_name, steps)
-    safe_name = re.sub(r"[^\w\- ]", "_", args.diagram_name).strip()
-    diagram_file = Path(tempfile.gettempdir()) / f"{safe_name}.drawio"
-    diagram_file.write_text(diagram_xml, encoding="utf-8")
+    safe = re.sub(r"[^\w\- ]", "_", args.diagram_name).strip()
+    out  = Path.home() / "Downloads" / f"{safe}.gliffy"
+    out.write_text(json.dumps(diagram, indent=2), encoding="utf-8")
 
-    # Upload to Confluence
-    attachment_url = upload_attachment(base_url, page_id,
-                                        diagram_file, headers)
-
-    result = {
-        "diagram_name": args.diagram_name,
-        "diagram_file": str(diagram_file),
-        "steps_count": len(steps),
-        "standard_steps_added": len(steps) - len(raw_steps),
-        "target_page": page_title,
-        "attachment_url": attachment_url,
-        "status": "uploaded"
-    }
-    print(json.dumps(result, indent=2))
-
-    print("\n--- How to import into Confluence ---", file=sys.stderr)
-    print(f"1. Open: {args.target_url}", file=sys.stderr)
-    print(f"2. Edit the page and place cursor under the target heading.", file=sys.stderr)
-    print(f"3. Insert a draw.io macro.", file=sys.stderr)
-    print(f"4. Choose 'Import' and select '{safe_name}.drawio' from page attachments.", file=sys.stderr)
-    print(f"5. Save and publish.", file=sys.stderr)
+    print(json.dumps({
+        "diagram_name":    args.diagram_name,
+        "diagram_file":    str(out),
+        "system_name":     system_name,
+        "inserter_source": inserter_source,
+        "subprocess_lanes": [
+            {"name": l["name"], "steps": len(l["steps"])} for l in subprocess_lanes
+        ],
+        "status": "saved",
+    }, indent=2))
+    print(f"\nSaved: {out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
