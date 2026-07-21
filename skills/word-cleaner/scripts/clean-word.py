@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Overwrite the original file instead of writing a _clean copy.",
     )
+    parser.add_argument(
+        "--process",
+        metavar="PROCESS",
+        default=None,
+        help="Process identifier. The booklet produced date is only updated when this is 'accessibility'.",
+    )
     return parser.parse_args()
 
 
@@ -119,24 +125,27 @@ def add_accessibility_line(doc, notes_page_end: int) -> bool:
 
     new_run = OxmlElement("w:r")
 
-    # Apply run properties (font) to match surrounding text
-    if ref_font_name or ref_font_size:
-        rPr = OxmlElement("w:rPr")
-        if ref_font_name:
-            rFonts = OxmlElement("w:rFonts")
-            rFonts.set(qn("w:ascii"), ref_font_name)
-            rFonts.set(qn("w:hAnsi"), ref_font_name)
-            rPr.append(rFonts)
-        if ref_font_size:
-            sz = OxmlElement("w:sz")
-            # font.size is in EMUs (1pt = 12700); w:sz uses half-points
-            half_pts = str(int(ref_font_size / 6350))
-            sz.set(qn("w:val"), half_pts)
-            szCs = OxmlElement("w:szCs")
-            szCs.set(qn("w:val"), half_pts)
-            rPr.append(sz)
-            rPr.append(szCs)
-        new_run.append(rPr)
+    # Apply run properties (font) to match surrounding text; force black color
+    rPr = OxmlElement("w:rPr")
+    if ref_font_name:
+        rFonts = OxmlElement("w:rFonts")
+        rFonts.set(qn("w:ascii"), ref_font_name)
+        rFonts.set(qn("w:hAnsi"), ref_font_name)
+        rPr.append(rFonts)
+    if ref_font_size:
+        sz = OxmlElement("w:sz")
+        # font.size is in EMUs (1pt = 12700); w:sz uses half-points
+        half_pts = str(int(ref_font_size / 6350))
+        sz.set(qn("w:val"), half_pts)
+        szCs = OxmlElement("w:szCs")
+        szCs.set(qn("w:val"), half_pts)
+        rPr.append(sz)
+        rPr.append(szCs)
+    # Always set font color to black
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "000000")
+    rPr.append(color)
+    new_run.append(rPr)
 
     new_text = OxmlElement("w:t")
     new_text.text = accessibility_text
@@ -199,7 +208,7 @@ def update_booklet_produced_date(doc, today: str) -> bool:
     return False
 
 
-def clean_word(input_path: Path, overwrite: bool) -> dict:
+def clean_word(input_path: Path, overwrite: bool, process: str | None = None) -> dict:
     try:
         from docx import Document
     except ImportError:
@@ -224,7 +233,10 @@ def clean_word(input_path: Path, overwrite: bool) -> dict:
     notes_page_end = find_notes_page_end(doc)
 
     accessibility_added = add_accessibility_line(doc, notes_page_end)
-    date_updated = update_booklet_produced_date(doc, today)
+
+    # Skip the booklet produced date update when the process is 'accessibility'
+    is_accessibility = (process or "").strip().lower() == "accessibility"
+    date_updated = update_booklet_produced_date(doc, today) if not is_accessibility else False
 
     if overwrite:
         output_path = input_path
@@ -248,7 +260,7 @@ def clean_word(input_path: Path, overwrite: bool) -> dict:
 def main() -> None:
     args = parse_args()
     input_path = Path(args.input)
-    result = clean_word(input_path, args.overwrite)
+    result = clean_word(input_path, args.overwrite, args.process)
     print(json.dumps(result, indent=2))
 
 

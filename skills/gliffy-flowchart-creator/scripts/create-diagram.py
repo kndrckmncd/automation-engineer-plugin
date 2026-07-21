@@ -649,9 +649,17 @@ def build_diagram(diagram_name: str, system_name: str,
         tops.append(y); y += h
     total_h = y
 
-    diagram_w = (CONTENT_X + TERM_W + H_GAP + DIA_W + H_GAP
-                 + (1 + len(sub_names)) * (SUB_W + H_GAP)
-                 + DIA_W + H_GAP + BOX_W + H_GAP + TERM_W + 100)
+    # Master lane width
+    master_w = (CONTENT_X + TERM_W + H_GAP + DIA_W + H_GAP
+                + (1 + len(sub_names)) * (SUB_W + H_GAP)
+                + DIA_W + H_GAP + BOX_W + H_GAP + TERM_W + 100)
+
+    # Subprocess lane row width: entry circle + STEPS_PER_ROW steps + return circle
+    sub_row_w = (CONTENT_X + (SUB_W + H_GAP)
+                 + STEPS_PER_ROW * (max(BOX_W, DIA_W) + H_GAP)
+                 + (SUB_W + H_GAP) + 60)
+
+    diagram_w = max(master_w, sub_row_w)
 
     # Pool outline
     g.bg_rect(0, 0, diagram_w, total_h, "none", "#555555", stroke_w=2.5)

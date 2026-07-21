@@ -28,7 +28,7 @@ The updated document overwrites the original by default, or is saved as
 
 ## Bundled Resources
 
-- `./scripts/clean-word.py` — performs the update; run directly via Python
+- `./scripts/clean-word.py` — performs the update; run directly via Python; accepts an optional `--process` argument
 
 ## Instructions
 
@@ -49,12 +49,15 @@ The updated document overwrites the original by default, or is saved as
    If missing, run `pip install python-docx` before proceeding.
 4. Run the cleaning script using the provided path. Always overwrite the original by default:
    ```
-   python ./scripts/clean-word.py --input "<full-path-to-docx>" --overwrite
+   python ./scripts/clean-word.py --input "<full-path-to-docx>" --process "<process>" --overwrite
    ```
    Only create a separate `_clean` copy if the user explicitly asks to keep the original:
    ```
-   python ./scripts/clean-word.py --input "<full-path-to-docx>"
+   python ./scripts/clean-word.py --input "<full-path-to-docx>" --process "<process>"
    ```
+   The `--process` flag must always be passed with the value the user provides.
+   - When `--process` is `accessibility`, the "This booklet produced:" date is **not** updated.
+   - For all other process values, the date **is** updated.
 5. Report the result to the user:
    - Whether the accessibility line was added to the notes page (or was already present)
    - Whether the "This booklet produced:" date was updated, and what the new value is
@@ -116,4 +119,4 @@ The updated document overwrites the original by default, or is saved as
 
 - 2026-07-02: Initial version
 - 2026-07-03: Accessibility line now appended to notes page (page 1); date update targets "This booklet produced:" field on cover page (page 2, between first and second page breaks)
-- 2026-07-06: Accessibility line now matches font name and size of surrounding notes page paragraphs
+- 2026-07-14: Date update skipped when process is 'accessibility'; accessibility note now always renders in black font color

@@ -45,12 +45,29 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+
+def _load_env():
+    """Walk up from this file to find and load a .env file."""
+    path = Path(__file__).resolve()
+    for parent in [path, *path.parents]:
+        env_file = parent / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    os.environ.setdefault(key.strip(), val.strip())
+            break
+
+_load_env()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Update a Jira ticket status.")
-    parser.add_argument("--domain", required=True, help="Jira domain, e.g. mycompany.atlassian.net")
-    parser.add_argument("--email", required=True, help="Atlassian account email")
+    parser.add_argument("--domain", default=None, help="Jira domain (or set JIRA_DOMAIN env var)")
+    parser.add_argument("--email", default=None, help="Atlassian account email (or set JIRA_EMAIL / email env var)")
     parser.add_argument(
         "--token",
         default=None,
@@ -67,6 +84,15 @@ def parse_args() -> argparse.Namespace:
         "--list-transitions", action="store_true", help="List available swimlanes for a ticket and exit"
     )
     args = parser.parse_args()
+
+    # Resolve domain and email from env if not passed
+    if not args.domain:
+        args.domain = os.environ.get("JIRA_DOMAIN", "manulife-cdn.atlassian.net")
+    if not args.email:
+        args.email = os.environ.get("JIRA_EMAIL") or os.environ.get("email")
+    if not args.email:
+        print("Error: Jira email not provided. Pass --email or set JIRA_EMAIL in .env", file=sys.stderr)
+        sys.exit(1)
 
     if not args.token:
         args.token = os.environ.get("JIRA_API_TOKEN")

@@ -34,6 +34,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 import xml.etree.ElementTree as ET
@@ -43,6 +44,22 @@ try:
 except ImportError:
     print("Error: requests is not installed. Run: pip install requests", file=sys.stderr)
     sys.exit(1)
+
+
+def _load_env():
+    """Walk up from this file to find and load a .env file."""
+    path = Path(__file__).resolve()
+    for parent in [path, *path.parents]:
+        env_file = parent / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    os.environ.setdefault(key.strip(), val.strip())
+            break
+
+_load_env()
 
 
 def parse_args() -> argparse.Namespace:
