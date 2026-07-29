@@ -386,19 +386,26 @@ def enter_hours_for_row(driver, schedule_code, day_hours, ooo_days, dry_run=Fals
 
 def sign_and_submit(driver):
     try:
-        btn = driver.find_element(By.XPATH, "//button[contains(text(),'Sign and Submit')]")
+        btn = driver.find_element(By.XPATH, "//button[normalize-space()='Sign and Submit']")
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+        time.sleep(0.5)
         btn.click()
-        time.sleep(3)
         print("Clicked Sign and Submit.")
-        # Confirm dialog if it appears
-        try:
-            confirm = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Confirm') or contains(text(),'OK') or contains(text(),'Submit')]"))
-            )
-            confirm.click()
-            print("Confirmed submission.")
-        except TimeoutException:
-            pass
+        # Poll for confirmation dialog (Planview shows a [role="dialog"] with a Yes button)
+        for _ in range(15):
+            time.sleep(1)
+            try:
+                confirm = driver.find_element(
+                    By.XPATH,
+                    "//*[@role='dialog']//button[normalize-space()='Yes' or normalize-space()='Confirm'"
+                    " or normalize-space()='OK' or normalize-space()='Agree']"
+                )
+                confirm.click()
+                print("Confirmed submission.")
+                return
+            except NoSuchElementException:
+                pass
+        print("WARNING: No confirmation dialog appeared after 15s — submission may not have completed.")
     except NoSuchElementException:
         print("Sign and Submit button not found.")
 
