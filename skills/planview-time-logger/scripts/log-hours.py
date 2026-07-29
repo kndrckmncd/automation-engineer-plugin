@@ -205,62 +205,81 @@ def get_existing_rows(driver):
 def find_and_check_assignment(driver, gl_code, assignment):
     """
     Find and check a single assignment checkbox on the Select Work page.
-    For standard activities (gl_code=None/"OOO"), searches by assignment name only.
+    For project work, scopes the search to the <li> items belonging to the matching
+    GL code project section — prevents accidentally checking the same assignment
+    name under a different project. For standard activities (no GL code), searches
+    by assignment name only.
     """
     is_standard = not gl_code or gl_code.upper() in ("OOO", "STANDARD", "")
 
-    # Try finding via list items (page uses <li> per assignment)
-    rows = driver.find_elements(By.CSS_SELECTOR, "li")
-    for row in rows:
-        try:
-            row_text = row.text.strip()
-        except StaleElementReferenceException:
-            continue
-        if assignment not in row_text:
-            continue
-        # For project work, skip if this row is in a different GL section
-        if not is_standard and gl_code:
-            try:
-                row.find_element(
-                    By.XPATH,
-                    f"./ancestor::*[.//h3[contains(.,'{gl_code}')] or "
-                    f".//h4[contains(.,'{gl_code}')] or "
-                    f".//h5[contains(.,'{gl_code}')]][1]"
-                )
-            except NoSuchElementException:
-                pass  # proceed anyway — assignment name match is good enough
-        try:
-            cb = row.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
-            if cb.is_selected():
-                print(f"  Already checked: '{assignment}'")
-                return True
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cb)
-            time.sleep(0.2)
-            cb.click()
-            time.sleep(0.3)
-            print(f"  [OK] Checked: '{assignment}'")
-            return True
-        except NoSuchElementException:
-            continue
+    if is_standard:
+        result = driver.execute_script("""
+            var asgn = arguments[0];
+            var items = document.querySelectorAll('li');
+            for (var i = 0; i < items.length; i++) {
+                var text = items[i].textContent.trim();
+                if (text !== asgn && !text.startsWith(asgn + '\\n')) continue;
+                var cb = items[i].querySelector('input[type="checkbox"]');
+                if (!cb) continue;
+                cb.scrollIntoView({block:'center'});
+                if (!cb.checked) { cb.click(); return 'checked'; }
+                return 'already';
+            }
+            return 'not_found';
+        """, assignment)
+    else:
+        # Find the project header <li> whose text contains the GL code, then scan
+        # sibling <li> items until the next project header to find the assignment.
+        result = driver.execute_script("""
+            var glCode   = arguments[0];
+            var asgn     = arguments[1];
+            var items    = Array.from(document.querySelectorAll('li'));
+            var projIdx  = -1;
 
-    # Fallback: label text search
-    try:
-        label = driver.find_element(
-            By.XPATH, f"//label[contains(normalize-space(.),'{assignment}')]"
-        )
-        cb_id = label.get_attribute("for")
-        cb = driver.find_element(By.ID, cb_id) if cb_id else label.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
-        if not cb.is_selected():
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cb)
-            cb.click()
-            time.sleep(0.3)
-        print(f"  [OK] Checked via label: '{assignment}'")
+            // Locate the project header item (contains the GL code)
+            for (var i = 0; i < items.length; i++) {
+                var t = items[i].textContent.trim();
+                if (t.indexOf(glCode) !== -1) {
+                    projIdx = i;
+                    break;
+                }
+            }
+            if (projIdx < 0) return 'proj_not_found';
+
+            // Walk forward until the next project header (contains a code-like pattern)
+            var glPattern = /[A-Z]{2}\\d{7,}/;
+            for (var j = projIdx + 1; j < items.length; j++) {
+                var itemText = items[j].textContent.trim();
+                // Stop when we hit a new project header
+                if (j > projIdx + 1 && glPattern.test(itemText) &&
+                    items[j].querySelector('input[type="checkbox"]') &&
+                    items[j].textContent.indexOf('\\n') !== -1) {
+                    break;
+                }
+                // Match assignment name exactly (item text may be just the label)
+                if (itemText === asgn || itemText.startsWith(asgn + '\\n')) {
+                    var cb = items[j].querySelector('input[type="checkbox"]');
+                    if (!cb) continue;
+                    cb.scrollIntoView({block:'center'});
+                    if (!cb.checked) { cb.click(); return 'checked'; }
+                    return 'already';
+                }
+            }
+            return 'not_found_in_section';
+        """, gl_code, assignment)
+
+    if result == 'checked':
+        print(f"  [OK] Checked: '{assignment}'")
         return True
-    except NoSuchElementException:
-        pass
-
-    print(f"  WARNING: Could not find checkbox for '{assignment}' (GL: {gl_code or 'standard'})")
-    return False
+    elif result == 'already':
+        print(f"  Already checked: '{assignment}'")
+        return True
+    elif result == 'proj_not_found':
+        print(f"  WARNING: Project with GL '{gl_code}' not found on Select Work page")
+        return False
+    else:
+        print(f"  WARNING: '{assignment}' not found in GL '{gl_code}' section (result: {result})")
+        return False
 
 
 def add_work_via_select_work(driver, resource_code, period_number, works_to_add):
