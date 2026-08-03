@@ -182,18 +182,14 @@ def extract(doc_path: str) -> dict:
             elif "POLICY OUTLINE" in heading_upper:
                 rows = parse_policy_outline(tbl)
                 if rows:
-                    policy_outlines.append({
-                        "title":    heading.strip(),
-                        "policies": rows,
-                    })
+                    key = re.split(r"[-–]", heading)[-1].strip()
+                    policy_outlines.append({key: rows})
 
             elif "BOOKLET OUTLINE" in heading_upper:
                 rows = parse_booklet_outline(tbl)
                 if rows:
-                    booklet_outlines.append({
-                        "title":    heading.strip(),
-                        "booklets": rows,
-                    })
+                    key = re.split(r"[-–]", heading)[-1].strip()
+                    booklet_outlines.append({key: rows})
 
         return {
             "webpak_group_number": webpak,
