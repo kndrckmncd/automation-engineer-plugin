@@ -104,12 +104,13 @@ def parse_policy_outline(tbl):
             cpmpdf     = multivalue(get_cell(tbl, r, 3))
             sub_folders = multivalue(get_cell(tbl, r, 4))
         rows.append({
-            "policy_plan_doc_number":  policy_number,
-            "comment":                 comment,
-            "epak_naming_convention":  epak,
-            "docunav_naming_convention": docunav,
-            "cpmpdf_descriptions":     cpmpdf,
-            "sub_folders":             sub_folders,
+            policy_number: {
+                "comment":                   comment,
+                "epak_naming_convention":    epak,
+                "docunav_naming_convention": docunav,
+                "cpmpdf_descriptions":       cpmpdf,
+                "sub_folders":               sub_folders,
+            }
         })
     return rows
 
@@ -125,13 +126,14 @@ def parse_booklet_outline(tbl):
         if not pub_number:
             continue
         rows.append({
-            "pub_number":              pub_number,
-            "comment":                 comment,
-            "class_numbers":           multivalue(get_cell(tbl, r, 2)),
-            "epak_naming_convention":  multivalue(get_cell(tbl, r, 3)),
-            "docunav_naming_convention": get_cell(tbl, r, 4),
-            "cpmpdf_descriptions":     multivalue(get_cell(tbl, r, 5)),
-            "sub_folders":             multivalue(get_cell(tbl, r, 6)),
+            pub_number: {
+                "comment":                   comment,
+                "class_numbers":             multivalue(get_cell(tbl, r, 2)),
+                "epak_naming_convention":    multivalue(get_cell(tbl, r, 3)),
+                "docunav_naming_convention": get_cell(tbl, r, 4),
+                "cpmpdf_descriptions":       multivalue(get_cell(tbl, r, 5)),
+                "sub_folders":               multivalue(get_cell(tbl, r, 6)),
+            }
         })
     return rows
 
@@ -181,16 +183,16 @@ def extract(doc_path: str) -> dict:
                 rows = parse_policy_outline(tbl)
                 if rows:
                     policy_outlines.append({
-                        "title": heading.strip(),
-                        "rows":  rows,
+                        "title":    heading.strip(),
+                        "policies": rows,
                     })
 
             elif "BOOKLET OUTLINE" in heading_upper:
                 rows = parse_booklet_outline(tbl)
                 if rows:
                     booklet_outlines.append({
-                        "title": heading.strip(),
-                        "rows":  rows,
+                        "title":    heading.strip(),
+                        "booklets": rows,
                     })
 
         return {
@@ -213,18 +215,18 @@ def main():
     parser.add_argument("--output", help="Optional path to write JSON output file")
     args = parser.parse_args()
 
-    doc_path = str(Path(args.file).resolve())
+    doc_path = Path(args.file).resolve()
     print(f"Extracting: {doc_path}", file=sys.stderr)
 
-    result = extract(doc_path)
+    result = extract(str(doc_path))
 
     output_json = json.dumps(result, indent=2, ensure_ascii=False)
     print(output_json)
 
-    if args.output:
-        out_path = Path(args.output)
-        out_path.write_text(output_json, encoding="utf-8")
-        print(f"Saved to: {out_path}", file=sys.stderr)
+    # Default output: same folder and base name as source, with .json extension
+    out_path = Path(args.output) if args.output else doc_path.with_suffix(".json")
+    out_path.write_text(output_json, encoding="utf-8")
+    print(f"Saved to: {out_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":
