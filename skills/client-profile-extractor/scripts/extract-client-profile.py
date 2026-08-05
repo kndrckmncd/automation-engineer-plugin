@@ -171,6 +171,7 @@ def extract(doc_path: str) -> dict:
         policyholder  = ""
         policy_outlines  = []
         booklet_outlines = []
+        last_updated_date = ""
 
         for i, tbl in enumerate(doc.Tables, 1):
             heading = heading_before_table(paras, tbl.Range.Start)
@@ -191,9 +192,22 @@ def extract(doc_path: str) -> dict:
                     key = re.split(r"[-–]", heading)[-1].strip()
                     booklet_outlines.append({key: rows})
 
+            else:
+                # Detect the Summary of Changes table by its header row
+                try:
+                    header = get_cell(tbl, 1, 1).lower()
+                    if "date" in header and tbl.Columns.Count == 3:
+                        for r in range(2, tbl.Rows.Count + 1):
+                            d = get_cell(tbl, r, 1)
+                            if d:
+                                last_updated_date = d
+                except Exception:
+                    pass
+
         return {
             "webpak_group_number": webpak,
             "policyholder_name":   policyholder,
+            "last_updated_date":   last_updated_date,
             "policy_outlines":     policy_outlines,
             "booklet_outlines":    booklet_outlines,
         }
